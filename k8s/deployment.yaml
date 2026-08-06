@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cake-site-deployment
+  labels:
+    app: cake-site
+  annotations:
+    eks.cluster: "db4freash-cluster"
+    eks.region: "us-east-1"
+    eks.nodeType: "t3.medium"
+spec:
+  replicas: 2                 # 2 nodes in the cluster; 1 pod per node
+  selector:
+    matchLabels:
+      app: cake-site
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1             # max 1 extra pod during update
+      maxUnavailable: 0       # never take a pod offline during update
+  template:
+    metadata:
+      labels:
+        app: cake-site
+    spec:
+      containers:
+        - name: cake-site
+          # ⬇ This tag gets updated by 'kubectl set image' in the pipeline
+          image: your-dockerhub-username/cake-site:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          # Sized for t3.medium (2 vCPU / 4 GB RAM)
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3

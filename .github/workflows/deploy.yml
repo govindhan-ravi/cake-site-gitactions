@@ -1,4 +1,4 @@
-name: Build and Deploy to EC2
+name: CI/CD Pipeline — SP Cakes & Delight
 
 on:
   push:
@@ -6,55 +6,197 @@ on:
       - main
   workflow_dispatch:
 
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/cake-site
+  EKS_CLUSTER_NAME: db4freash-cluster        # Your EKS cluster
+  AWS_REGION: us-east-1                       # Your EKS region
+  K8S_DEPLOYMENT: cake-site-deployment
+  K8S_CONTAINER: cake-site
+
 jobs:
-  build-and-push:
+  # ─────────────────────────────────────────────
+  # STAGE 1: Checkout
+  # ─────────────────────────────────────────────
+  checkout:
+    name: "Stage 1 — Git Checkout"
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout source code
         uses: actions/checkout@v4
+
+  # ─────────────────────────────────────────────
+  # STAGE 2-5: Install, Lint, Test, SonarQube
+  # ─────────────────────────────────────────────
+  code-quality:
+    name: "Stage 2-5 — Install, Lint, Test, SonarQube"
+    runs-on: ubuntu-latest
+    needs: checkout
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # Stage 2 — Install Dependencies
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm install
+
+      # Stage 3 — ESLint
+      - name: Run ESLint
+        run: npm run lint
+        continue-on-error: false   # fail pipeline on lint errors
+
+      # Stage 4 — Tests
+      - name: Run tests
+        run: npm test -- --watchAll=false --ci
+        env:
+          CI: true
+
+      # Stage 5 — SonarQube Scan (ENABLED — runs when SONAR_TOKEN secret is set)
+      - name: SonarQube Scan
+        if: ${{ secrets.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      # Stage 6 — SonarQube Quality Gate (ENABLED — runs when SONAR_TOKEN secret is set)
+      - name: SonarQube Quality Gate
+        if: ${{ secrets.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  # ─────────────────────────────────────────────
+  # STAGE 7: Trivy Filesystem Scan (disabled)
+  # ─────────────────────────────────────────────
+  trivy-fs-scan:
+    name: "Stage 7 — Trivy Filesystem Scan (Skipped)"
+    runs-on: ubuntu-latest
+    needs: code-quality
+    if: false   # ← set to: true to enable
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "table"
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+
+  # ─────────────────────────────────────────────
+  # STAGE 8: Docker Build
+  # STAGE 9: Trivy Image Scan (disabled)
+  # STAGE 10: Docker Push
+  # ─────────────────────────────────────────────
+  docker-build-push:
+    name: "Stage 8-10 — Docker Build, Scan & Push"
+    runs-on: ubuntu-latest
+    needs: code-quality
+    outputs:
+      image_tag: ${{ steps.set-tag.outputs.tag }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # Stage 8 — Docker Build
+      - name: Set Docker image tag (build number)
+        id: set-tag
+        run: echo "tag=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ env.DOCKER_IMAGE }}:${{ github.run_number }} \
+            -t ${{ env.DOCKER_IMAGE }}:latest \
+            .
+
+      # Stage 9 — Trivy Image Scan (disabled)
+      - name: Trivy image scan
+        if: false   # ← set to: true to enable
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ env.DOCKER_IMAGE }}:${{ github.run_number }}"
+          format: "table"
+          exit-code: "1"
+          severity: "CRITICAL,HIGH"
+
+      # Stage 10 — Docker Push
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Build and Push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/cake-site:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Push Docker image to Docker Hub
+        run: |
+          docker push ${{ env.DOCKER_IMAGE }}:${{ github.run_number }}
+          docker push ${{ env.DOCKER_IMAGE }}:latest
 
-  deploy:
-    needs: build-and-push
+  # ─────────────────────────────────────────────
+  # STAGE 11: Deploy to EKS
+  # ─────────────────────────────────────────────
+  deploy-to-eks:
+    name: "Stage 11 — Deploy to Amazon EKS"
     runs-on: ubuntu-latest
+    needs: docker-build-push
     steps:
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            # Pull the latest image
-            docker pull ${{ secrets.DOCKER_USERNAME }}/cake-site:latest
-            
-            # Stop and remove existing container if it exists
-            docker stop cake-site || true
-            docker rm cake-site || true
-            
-            # Run the new container
-            docker run -d \
-              --name cake-site \
-              -p 80:80 \
-              --restart always \
-              ${{ secrets.DOCKER_USERNAME }}/cake-site:latest
-            
-            # Clean up old images
-            docker image prune -f
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}    # us-east-1
+
+      - name: Update kubeconfig for EKS cluster (db4freash-cluster)
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ env.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+
+      - name: Update deployment image to build #${{ github.run_number }}
+        run: |
+          kubectl set image deployment/${{ env.K8S_DEPLOYMENT }} \
+            ${{ env.K8S_CONTAINER }}=${{ secrets.DOCKER_USERNAME }}/cake-site:${{ github.run_number }}
+
+      - name: Wait for rollout to complete (timeout 2 min)
+        run: |
+          kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} --timeout=120s
+
+      - name: Print deployed pods and LoadBalancer URL
+        run: |
+          echo "============================================"
+          echo " Cluster : db4freash-cluster (us-east-1)"
+          echo " Build   : #${{ github.run_number }}"
+          echo " Image   : ${{ secrets.DOCKER_USERNAME }}/cake-site:${{ github.run_number }}"
+          echo "============================================"
+          echo ""
+          echo "=== Running Pods ==="
+          kubectl get pods -l app=cake-site -o wide
+          echo ""
+          echo "=== Service / LoadBalancer ==="
+          kubectl get svc cake-site-service
+          echo ""
+          echo "=== Node Group Info ==="
+          echo "Node type : t3.medium | Nodes: 2 (min 1, max 3)"
