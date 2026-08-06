@@ -17,7 +17,7 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test --watchAll=false",
-    "lint": "react-scripts build --dry-run || eslint src --ext .js,.jsx --max-warnings=0",
+    "lint": "eslint src",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
