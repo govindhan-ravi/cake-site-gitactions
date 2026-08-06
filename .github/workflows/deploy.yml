@@ -56,17 +56,15 @@ jobs:
         env:
           CI: true
 
-      # Stage 5 — SonarQube Scan (ENABLED — runs when SONAR_TOKEN secret is set)
+      # Stage 5 — SonarQube Scan
       - name: SonarQube Scan
-        if: ${{ secrets.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-      # Stage 6 — SonarQube Quality Gate (ENABLED — runs when SONAR_TOKEN secret is set)
+      # Stage 6 — SonarQube Quality Gate
       - name: SonarQube Quality Gate
-        if: ${{ secrets.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-quality-gate-action@master
         timeout-minutes: 5
         env:
