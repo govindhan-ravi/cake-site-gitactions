@@ -26,7 +26,7 @@ spec:
       containers:
         - name: cake-site
           # ⬇ This tag gets updated by 'kubectl set image' in the pipeline
-          image: your-dockerhub-username/cake-site:latest
+          image: govindhan/cake-site:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 80
